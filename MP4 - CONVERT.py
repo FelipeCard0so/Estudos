@@ -1,83 +1,29 @@
 import os
 import subprocess
-import math
-from datetime import timedelta
 
-# Método 1: Usando FFmpeg diretamente (sem moviepy)
 def compressar_video_ffmpeg(caminho_entrada, caminho_saida, bitrate):
+    # Bitrate de vídeo (reservando um pouco para o áudio)
+    bitrate_video = int(bitrate - 128) if bitrate > 256 else int(bitrate * 0.8)
+    
     comando = [
         'ffmpeg',
-        '-y',  # Sobrescrever arquivo existente
+        '-y',
         '-i', caminho_entrada,
-        '-c:v', 'libx264',  # Codec de vídeo
-        '-b:v', f'{bitrate}k',  # Bitrate de vídeo
-        '-preset', 'medium',  # Balanço entre velocidade/compressão
-        '-crf', '23',  # Qualidade (0-51, menor é melhor)
-        '-c:a', 'aac',  # Codec de áudio
-        '-b:a', '128k',  # Bitrate de áudio
+        '-c:v', 'libx264',
+        '-b:v', f'{bitrate_video}k',
+        '-maxrate', f'{bitrate}k',
+        '-bufsize', f'{bitrate*2}k',
+        '-preset', 'medium',
+        '-pix_fmt', 'yuv420p', # Resolve problemas de cores/bits do iPhone
+        '-c:a', 'aac',
+        '-b:a', '128k',
         caminho_saida
     ]
     subprocess.run(comando, check=True)
 
-# Método 2: Usando imageio (alternativa ao moviepy)
-def compressar_video_imageio(caminho_entrada, caminho_saida, bitrate):
-    import imageio.v3 as iio
-    from imageio.plugins.ffmpeg import FfmpegFormat
-
-    # Ler metadados do vídeo
-    with iio.imopen(caminho_entrada, "r", plugin="pyav") as file:
-        duration = file.properties().duration
-        fps = file.properties().fps
-
-    # Configurar FFmpeg
-    ffmpeg_format = FfmpegFormat("ffmpeg")
-
-    # Escrever vídeo comprimido
-    writer = ffmpeg_format.create_writer(
-        caminho_saida,
-        codec="libx264",
-        bitrate=f"{bitrate}k",
-        fps=fps,
-        input_params=['-y'],
-        output_params=['-preset', 'medium', '-crf', '23']
-    )
-
-    with writer:
-        for frame in iio.imiter(caminho_entrada, plugin="pyav"):
-            writer.write(frame)
-
-# Método 3: Usando OpenCV (apenas vídeo, sem áudio)
-def compressar_video_opencv(caminho_entrada, caminho_saida, bitrate):
-    import cv2
-
-    cap = cv2.VideoCapture(caminho_entrada)
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-
-    fourcc = cv2.VideoWriter_fourcc(*'XVID')
-    out = cv2.VideoWriter(
-        caminho_saida,
-        fourcc,
-        fps,
-        (width, height)
-    )
-
-    while cap.isOpened():
-        ret, frame = cap.read()
-        if not ret:
-            break
-        out.write(frame)
-
-    cap.release()
-    out.release()
-
-# Funções auxiliares comuns
 def calcular_bitrate(tamanho_alvo_mb, duracao_segundos):
-    return int((tamanho_alvo_mb * 8192) / duracao_segundos)  # 8 * 1024 = 8192
-
-def listar_arquivos_video(diretorio):
-    return [f for f in os.listdir(diretorio) if f.lower().endswith(('.mp4', '.mov', '.avi'))]
+    # Cálculo: (MB * 8192 bits) / segundos = kbps
+    return int((tamanho_alvo_mb * 8192) / duracao_segundos)
 
 def obter_duracao_video(caminho):
     result = subprocess.run([
@@ -86,40 +32,41 @@ def obter_duracao_video(caminho):
     ], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     return float(result.stdout)
 
-# Processamento principal
 def main():
-    diretorio = input("Digite o caminho do diretório onde os vídeos estão: ")
-    tamanho_maximo_mb = 5
+    diretorio = input("Digite o caminho da pasta dos vídeos: ").strip()
+    tamanho_alvo_mb = 5 # Seu alvo de 5MB
 
-    for arquivo in listar_arquivos_video(diretorio):
-        caminho_completo = os.path.join(diretorio, arquivo)
+    if not os.path.exists(diretorio):
+        print("Pasta não encontrada.")
+        return
 
-        if os.path.getsize(caminho_completo) / (1024 * 1024) <= tamanho_maximo_mb:
-            print(f"{arquivo} já está abaixo de 199MB. Pulando...")
+    pasta_saida = os.path.join(diretorio, "COMPRIMIDOS")
+    if not os.path.exists(pasta_saida):
+        os.makedirs(pasta_saida)
+
+    extensoes = ('.mp4', '.mov', '.avi', '.mkv')
+    arquivos = [f for f in os.listdir(diretorio) if f.lower().endswith(extensoes)]
+
+    for arquivo in arquivos:
+        caminho_in = os.path.join(diretorio, arquivo)
+        tamanho_atual = os.path.getsize(caminho_in) / (1024 * 1024)
+
+        if tamanho_atual <= tamanho_alvo_mb:
+            print(f"SKIPPED: {arquivo} já tem {tamanho_atual:.2f}MB")
             continue
 
         try:
-            duracao = obter_duracao_video(caminho_completo)
-            bitrate = calcular_bitrate(tamanho_maximo_mb, duracao)
-            nome_base = os.path.splitext(arquivo)[0]
-            caminho_saida = os.path.join(diretorio, f"{nome_base}_comprimido.mp4")
+            duracao = obter_duracao_video(caminho_in)
+            bitrate = calcular_bitrate(tamanho_alvo_mb, duracao)
+            
+            nome_saida = os.path.splitext(arquivo)[0] + ".mp4"
+            caminho_out = os.path.join(pasta_saida, nome_saida)
 
-            print(f"\nComprimindo {arquivo}...")
-
-            # Escolha o método desejado:
-            # Método 1 (Recomendado):
-            compressar_video_ffmpeg(caminho_completo, caminho_saida, bitrate)
-
-            # Método 2:
-            # compressar_video_imageio(caminho_completo, caminho_saida, bitrate)
-
-            # Método 3 (sem áudio):
-            # compressar_video_opencv(caminho_completo, caminho_saida, bitrate)
-
-            print(f"Sucesso! Arquivo salvo como: {caminho_saida}")
-
+            print(f"\n>>> Comprimindo: {arquivo} ({tamanho_atual:.2f}MB -> Alvo {tamanho_alvo_mb}MB)")
+            compressar_video_ffmpeg(caminho_in, caminho_out, bitrate)
+            
         except Exception as e:
-            print(f"Erro ao processar {arquivo}: {str(e)}")
+            print(f"ERRO em {arquivo}: {e}")
 
 if __name__ == "__main__":
     main()
